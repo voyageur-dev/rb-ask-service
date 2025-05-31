@@ -1,0 +1,87 @@
+name: Deploy Lambda
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Select the environment to deploy'
+        required: true
+        default: 'int'
+        type: choice
+        options:
+          - int
+          - prod
+
+jobs:
+  set-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      dir: ${{ steps.find-pom.outputs.dir }}
+      repo: ${{ steps.get-repo-name.outputs.repo }}
+    steps:
+      - name: Set environment
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+          else
+            echo "environment=int" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get repo name
+        id: get-repo-name
+        run: |
+          echo "repo=$(basename "${{ github.repository }}")" >> $GITHUB_OUTPUT
+
+      - name: Display env
+        run: |
+          echo "Selected environment: ${{ steps.set-env.outputs.environment }}"
+          echo "Repository name: ${{ steps.get-repo-name.outputs.repo }}"
+
+  deploy:
+    needs: set-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.set-environment.outputs.environment }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./function
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.3'
+
+      - name: Install dependencies
+        run: go mod tidy
+
+      - name: Build the Go binary
+        run: GOOS=linux GOARCH=arm64 go build -o bootstrap main.go
+
+      - name: Zip the binary
+        run: zip function.zip bootstrap
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_INFRA_ADMIN_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_INFRA_ADMIN_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload to S3
+        run: aws s3 cp function.zip s3://${{ vars.CODEBASE_BUCKET }}-${{ needs.set-environment.outputs.environment }}/${{needs.set-environment.outputs.repo}}-${{ needs.set-environment.outputs.environment }}.zip
+
+      - name: Deploy to lambda
+        id: deploy-lambda
+        run: |
+          # Update function code
+          aws lambda update-function-code \
+            --function-name ${{needs.set-environment.outputs.repo}}-${{ needs.set-environment.outputs.environment }} \
+            --s3-bucket ${{ vars.CODEBASE_BUCKET }}-${{ needs.set-environment.outputs.environment }} \
+            --s3-key ${{needs.set-environment.outputs.repo}}-${{ needs.set-environment.outputs.environment }}.zip
