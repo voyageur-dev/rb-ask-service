@@ -1,6 +1,6 @@
-# rb-bookmark-service
+# rb-ask-service
 
-This is a sample template for rb-bookmark-service - Below is a brief explanation of what we have generated for you:
+This is a sample template for rb-ask-service - Below is a brief explanation of what we have generated for you:
 
 ```bash
 .

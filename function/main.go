@@ -12,28 +12,29 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"google.golang.org/genai"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 )
 
 const (
-	getBookMarksPath   = "GET /rb/bookmarks"
-	createBookmarkPath = "POST /rb/bookmarks"
-	deleteBookmarkPath = "DELETE /rb/bookmarks/{examId}/{questionId}"
+	getAnalysisPath    = "GET /rb/ask/{examId}/{questionId}"
+	createAnalysisPath = "POST /rb/ask"
 )
 
 var (
-	bookmarksTableName string
+	askTableName string
+	genaiApiKey  string
 
-	dbClient *dynamodb.Client
+	dbClient    *dynamodb.Client
+	genaiClient *genai.Client
 )
 
 func init() {
-	bookmarksTableName = os.Getenv("BOOKMARKS_TABLE_NAME")
+	askTableName = os.Getenv("ASK_TABLE_NAME")
+	genaiApiKey = os.Getenv("GENAI_API_KEY")
 
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
@@ -41,6 +42,14 @@ func init() {
 	}
 
 	dbClient = dynamodb.NewFromConfig(cfg)
+
+	genaiClient, err = genai.NewClient(context.TODO(), &genai.ClientConfig{
+		APIKey:  genaiApiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		panic(err)
+	}
 }
 
 func handler(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -48,12 +57,10 @@ func handler(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPRes
 
 	return func() (events.APIGatewayV2HTTPResponse, error) {
 		switch path {
-		case getBookMarksPath:
-			return getBookmarks(request)
-		case createBookmarkPath:
-			return createBookmark(request)
-		case deleteBookmarkPath:
-			return deleteBookmark(request)
+		case getAnalysisPath:
+			return getAnalysis(request)
+		case createAnalysisPath:
+			return createAnalysis(request)
 		default:
 			return events.APIGatewayV2HTTPResponse{
 				Body:       "Path Not Found",
@@ -63,20 +70,16 @@ func handler(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPRes
 	}()
 }
 
-func getBookmarks(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	queryParams := request.QueryStringParameters
-	examId, ext := queryParams["examId"]
+func getAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	pathParams := request.PathParameters
+	examId, _ := pathParams["examId"]
+	questionId, _ := pathParams["questionId"]
 
-	userId, _ := request.RequestContext.Authorizer.JWT.Claims["sub"]
-
-	builder := expression.Key("user_id").Equal(expression.Value(userId))
-	if ext {
-		builder = builder.And(expression.Key("exam_question_key").BeginsWith(examId))
-	}
+	builder := expression.Key("exam_question_key").Equal(expression.Value(fmt.Sprintf("%s#%s", examId, questionId)))
 	expr, _ := expression.NewBuilder().WithKeyCondition(builder).Build()
 
 	input := &dynamodb.QueryInput{
-		TableName:                 aws.String(bookmarksTableName),
+		TableName:                 aws.String(askTableName),
 		KeyConditionExpression:    expr.KeyCondition(),
 		ExpressionAttributeNames:  expr.Names(),
 		ExpressionAttributeValues: expr.Values(),
@@ -84,27 +87,24 @@ func getBookmarks(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HT
 
 	result, err := dbClient.Query(context.TODO(), input)
 	if err != nil {
-		log.Println(fmt.Sprintf("Error getting bookmarks for %s, %v", userId, err))
+		log.Println(fmt.Sprintf("Error getting analysis for %s#%s: %v", examId, questionId, err))
 		return events.APIGatewayV2HTTPResponse{
 			Body:       "Error getting bookmarks",
 			StatusCode: http.StatusInternalServerError,
 		}, nil
 	}
 
-	bookmarks := make(map[string][]int)
+	analysis := make(map[string]models.Analysis)
 	for _, item := range result.Items {
-		parts := strings.Split(item["exam_question_key"].(*types.AttributeValueMemberS).Value, "#")
-		idx, err := strconv.Atoi(parts[1])
-		if err != nil {
-			continue
+		if model, ext := item["model"]; ext {
+			analysis[model.(*types.AttributeValueMemberS).Value] = models.Analysis{
+				Answer:      item["answer"].(*types.AttributeValueMemberS).Value,
+				Explanation: item["explanation"].(*types.AttributeValueMemberS).Value,
+			}
 		}
-
-		bookmarks[parts[0]] = append(bookmarks[parts[0]], idx)
 	}
 
-	response, _ := json.Marshal(models.GetBookmarksResponse{
-		Bookmarks: bookmarks,
-	})
+	response, _ := json.Marshal(analysis)
 
 	return events.APIGatewayV2HTTPResponse{
 		Body:       string(response),
@@ -112,26 +112,38 @@ func getBookmarks(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HT
 	}, nil
 }
 
-func createBookmark(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	userId, _ := request.RequestContext.Authorizer.JWT.Claims["sub"]
-
-	body := make(map[string]interface{})
-	err := json.Unmarshal([]byte(request.Body), &body)
+func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	question := models.Question{}
+	err := json.Unmarshal([]byte(request.Body), &question)
 	if err != nil {
-		log.Println(fmt.Sprintf("Error creating bookmark for %s, %v", userId, err))
+		log.Println(fmt.Sprintf("Error unmarshal question when creating analysis: %v", err))
 		return events.APIGatewayV2HTTPResponse{
-			Body:       "Error creating bookmark",
+			Body:       "Error creating analysis",
 			StatusCode: http.StatusBadRequest,
 		}, nil
 	}
 
-	examId := body["examId"].(string)
-	questionId := int64(body["questionId"].(float64))
+	analysis, err := fetchAnalysis(question)
+	if err != nil {
+		log.Println(fmt.Sprintf("Error fetching analysis when creating analysis: %v", err))
+		return events.APIGatewayV2HTTPResponse{
+			Body:       "Error creating analysis",
+			StatusCode: http.StatusBadRequest,
+		}, nil
+	}
 
 	item := map[string]types.AttributeValue{
-		"user_id": &types.AttributeValueMemberS{Value: userId},
 		"exam_question_key": &types.AttributeValueMemberS{
-			Value: fmt.Sprintf("%s#%d", examId, questionId),
+			Value: fmt.Sprintf("%s#%d", question.ExamId, question.QuestionId),
+		},
+		"model": &types.AttributeValueMemberS{
+			Value: "gemini-2.0-flash-lite",
+		},
+		"answer": &types.AttributeValueMemberS{
+			Value: analysis.Answer,
+		},
+		"explanation": &types.AttributeValueMemberS{
+			Value: analysis.Explanation,
 		},
 		"created_at": &types.AttributeValueMemberS{
 			Value: time.Now().UTC().Format(time.RFC3339),
@@ -139,14 +151,14 @@ func createBookmark(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 	}
 
 	_, err = dbClient.PutItem(context.TODO(), &dynamodb.PutItemInput{
-		TableName: aws.String(bookmarksTableName),
+		TableName: aws.String(askTableName),
 		Item:      item,
 	})
 
 	if err != nil {
-		log.Println(fmt.Sprintf("Error creating bookmark for %s, %v", userId, err))
+		log.Println(fmt.Sprintf("Error putting analysis item in dynamodb: %v", err))
 		return events.APIGatewayV2HTTPResponse{
-			Body:       "Error creating bookmark",
+			Body:       "Error creating analysis",
 			StatusCode: http.StatusInternalServerError,
 		}, nil
 	}
@@ -156,35 +168,40 @@ func createBookmark(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 	}, nil
 }
 
-func deleteBookmark(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	userId, _ := request.RequestContext.Authorizer.JWT.Claims["sub"]
+func fetchAnalysis(question models.Question) (models.Analysis, error) {
+	content := fmt.Sprintf("%s\n", question.Question)
+	for _, option := range question.Options {
+		content += fmt.Sprintf("%s\n", option.Text)
+	}
 
-	examId := request.PathParameters["examId"]
-	questionId := request.PathParameters["questionId"]
-
-	key := map[string]types.AttributeValue{
-		"user_id": &types.AttributeValueMemberS{Value: userId},
-		"exam_question_key": &types.AttributeValueMemberS{
-			Value: fmt.Sprintf("%s#%s", examId, questionId),
+	analysisConfig := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+		ResponseSchema: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"answer":      {Type: genai.TypeString},
+				"explanation": {Type: genai.TypeString},
+			},
 		},
 	}
 
-	_, err := dbClient.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
-		TableName: aws.String(bookmarksTableName),
-		Key:       key,
-	})
+	result, err := genaiClient.Models.GenerateContent(
+		context.Background(),
+		"gemini-2.0-flash-lite",
+		genai.Text(content),
+		analysisConfig,
+	)
 
 	if err != nil {
-		log.Println(fmt.Sprintf("Error deleting bookmark for %s, %v", userId, err))
-		return events.APIGatewayV2HTTPResponse{
-			Body:       "Error deleting bookmark",
-			StatusCode: http.StatusInternalServerError,
-		}, nil
+		return models.Analysis{}, err
 	}
 
-	return events.APIGatewayV2HTTPResponse{
-		StatusCode: http.StatusOK,
-	}, nil
+	var analysis models.Analysis
+	if err := json.Unmarshal([]byte(result.Text()), &analysis); err != nil {
+		return models.Analysis{}, err
+	}
+
+	return analysis, nil
 }
 
 func main() {
