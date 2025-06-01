@@ -181,7 +181,7 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 		ResponseSchema: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
-				"answer": {
+				"answers": {
 					Type: genai.TypeArray,
 					Items: &genai.Schema{
 						Type: genai.TypeString,
