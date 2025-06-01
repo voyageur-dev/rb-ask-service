@@ -174,13 +174,22 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 		content += fmt.Sprintf("%s\n", option.Text)
 	}
 
+	temperature := float32(0)
 	analysisConfig := &genai.GenerateContentConfig{
+		Temperature:      &temperature,
 		ResponseMIMEType: "application/json",
 		ResponseSchema: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
-				"answer":      {Type: genai.TypeString},
-				"explanation": {Type: genai.TypeString},
+				"answer": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeString,
+					},
+				},
+				"explanation": {
+					Type: genai.TypeString,
+				},
 			},
 		},
 	}
