@@ -96,9 +96,15 @@ func getAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTT
 
 	analysis := make(map[string]models.Analysis)
 	for _, item := range result.Items {
+		itemAnswers := item["answers"].(*types.AttributeValueMemberL).Value
+		answers := make([]string, len(itemAnswers))
+		for i, answer := range itemAnswers {
+			answers[i] = answer.(*types.AttributeValueMemberS).Value
+		}
+
 		if model, ext := item["model"]; ext {
 			analysis[model.(*types.AttributeValueMemberS).Value] = models.Analysis{
-				Answer:      item["answer"].(*types.AttributeValueMemberS).Value,
+				Answers:     answers,
 				Explanation: item["explanation"].(*types.AttributeValueMemberS).Value,
 			}
 		}
@@ -132,6 +138,13 @@ func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 		}, nil
 	}
 
+	answers := make([]types.AttributeValue, len(analysis.Answers))
+	for i, answer := range analysis.Answers {
+		answers[i] = &types.AttributeValueMemberS{
+			Value: answer,
+		}
+	}
+
 	item := map[string]types.AttributeValue{
 		"exam_question_key": &types.AttributeValueMemberS{
 			Value: fmt.Sprintf("%s#%d", question.ExamId, question.QuestionId),
@@ -139,8 +152,8 @@ func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 		"model": &types.AttributeValueMemberS{
 			Value: "gemini-2.0-flash-lite",
 		},
-		"answer": &types.AttributeValueMemberS{
-			Value: analysis.Answer,
+		"answers": &types.AttributeValueMemberL{
+			Value: answers,
 		},
 		"explanation": &types.AttributeValueMemberS{
 			Value: analysis.Explanation,
