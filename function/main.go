@@ -184,7 +184,7 @@ func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 
 func fetchAnalysis(question models.Question) (models.Analysis, error) {
 	var parts []*genai.Part
-	parts = append(parts, genai.NewPartFromText(question.Question))
+	parts = append(parts, genai.NewPartFromText(fmt.Sprintf("%s\n", question.Question)))
 	if len(question.S3ImageUrls) > 0 {
 		for _, url := range question.S3ImageUrls {
 			image, _ := fetchImage(url)
@@ -192,7 +192,7 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 		}
 	}
 	for _, option := range question.Options {
-		parts = append(parts, genai.NewPartFromText(option.Text))
+		parts = append(parts, genai.NewPartFromText(fmt.Sprintf("%s\n", option.Text)))
 		if len(option.S3ImageUrls) > 0 {
 			for _, url := range option.S3ImageUrls {
 				image, _ := fetchImage(url)
