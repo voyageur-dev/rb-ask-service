@@ -204,6 +204,7 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 			expectedNumOfAnswer += 1
 		}
 	}
+	parts = append(parts, genai.NewPartFromText("Only provide the option id in the answer\n"))
 
 	contents := []*genai.Content{
 		genai.NewContentFromParts(parts, genai.RoleUser),
