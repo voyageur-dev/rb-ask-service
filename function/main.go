@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"google.golang.org/genai"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -182,9 +183,26 @@ func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 }
 
 func fetchAnalysis(question models.Question) (models.Analysis, error) {
-	content := fmt.Sprintf("%s\n", question.Question)
+	var parts []*genai.Part
+	parts = append(parts, genai.NewPartFromText(question.Question))
+	if len(question.S3ImageUrls) > 0 {
+		for _, url := range question.S3ImageUrls {
+			image, _ := fetchImage(url)
+			parts = append(parts, image)
+		}
+	}
 	for _, option := range question.Options {
-		content += fmt.Sprintf("%s\n", option.Text)
+		parts = append(parts, genai.NewPartFromText(option.Text))
+		if len(option.S3ImageUrls) > 0 {
+			for _, url := range option.S3ImageUrls {
+				image, _ := fetchImage(url)
+				parts = append(parts, image)
+			}
+		}
+	}
+
+	contents := []*genai.Content{
+		genai.NewContentFromParts(parts, genai.RoleUser),
 	}
 
 	temperature := float32(0)
@@ -210,7 +228,7 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 	result, err := genaiClient.Models.GenerateContent(
 		context.Background(),
 		"gemini-2.0-flash-lite",
-		genai.Text(content),
+		contents,
 		analysisConfig,
 	)
 
@@ -224,6 +242,13 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 	}
 
 	return analysis, nil
+}
+
+func fetchImage(url string) (*genai.Part, error) {
+	imageResp, _ := http.Get(url)
+	imageBytes, _ := io.ReadAll(imageResp.Body)
+	contentType := imageResp.Header.Get("Content-Type")
+	return genai.NewPartFromBytes(imageBytes, contentType), nil
 }
 
 func main() {
