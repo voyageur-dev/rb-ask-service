@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"function/models"
 	"github.com/aws/aws-lambda-go/events"
@@ -248,6 +249,9 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 		return models.Analysis{}, err
 	}
 
+	if validateAnalysis(analysis) != nil {
+		return models.Analysis{}, err
+	}
 	return analysis, nil
 }
 
@@ -256,6 +260,21 @@ func fetchImage(url string) (*genai.Part, error) {
 	imageBytes, _ := io.ReadAll(imageResp.Body)
 	contentType := imageResp.Header.Get("Content-Type")
 	return genai.NewPartFromBytes(imageBytes, contentType), nil
+}
+
+func validateAnalysis(analysis models.Analysis) error {
+	if analysis.Answers == nil || len(analysis.Answers) == 0 {
+		return errors.New("answers should not be empty")
+	}
+	for _, answer := range analysis.Answers {
+		if len(answer) != 1 {
+			return errors.New(fmt.Sprintf("answer length is suspicious, provided with: %s", answer))
+		}
+	}
+	if analysis.Explanation == "" {
+		return errors.New("explanation should not be empty")
+	}
+	return nil
 }
 
 func main() {
