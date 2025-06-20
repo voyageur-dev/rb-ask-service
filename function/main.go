@@ -121,8 +121,8 @@ func getAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTT
 }
 
 func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	question := models.Question{}
-	err := json.Unmarshal([]byte(request.Body), &question)
+	createAnalysisRequest := models.CreateAnalysisRequest{}
+	err := json.Unmarshal([]byte(request.Body), &createAnalysisRequest)
 	if err != nil {
 		log.Println(fmt.Sprintf("Error unmarshal question when creating analysis: %v", err))
 		return events.APIGatewayV2HTTPResponse{
@@ -131,7 +131,8 @@ func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 		}, nil
 	}
 
-	analysis, err := fetchAnalysis(question)
+	question := createAnalysisRequest.Question
+	analysis, err := fetchAnalysis(question, createAnalysisRequest.Model)
 	if err != nil {
 		log.Println(fmt.Sprintf("Error fetching analysis when creating analysis: %v", err))
 		return events.APIGatewayV2HTTPResponse{
@@ -183,7 +184,7 @@ func createAnalysis(request events.APIGatewayV2HTTPRequest) (events.APIGatewayV2
 	}, nil
 }
 
-func fetchAnalysis(question models.Question) (models.Analysis, error) {
+func fetchAnalysis(question models.Question, model string) (models.Analysis, error) {
 	var parts []*genai.Part
 	parts = append(parts, genai.NewPartFromText(fmt.Sprintf("%s\n", question.Question)))
 	var expectedNumOfAnswer int64
@@ -235,7 +236,7 @@ func fetchAnalysis(question models.Question) (models.Analysis, error) {
 
 	result, err := genaiClient.Models.GenerateContent(
 		context.Background(),
-		"gemini-2.0-flash-lite",
+		model,
 		contents,
 		analysisConfig,
 	)
